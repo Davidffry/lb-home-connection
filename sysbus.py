@@ -3,36 +3,41 @@ import os
 import pickle
 import json
 from collections import *
-import functools
 import tempfile
+import schedule
 import datetime
-import subprocess
+import time
 from dateutil.tz import tz
 from dateutil import parser as parsedate
 import requests
 import requests.utils
+from influxdb import InfluxDBClient
+from datetime import datetime
 
 
-URL_LIVEBOX = 'http://livebox.home/'
-USER_LIVEBOX = 'admin'
-PASSWORD_LIVEBOX = 'admin'
-VERSION_LIVEBOX = 'lb4'
+URL_LIVEBOX = ""
+USER_LIVEBOX = ""
+PASSWORD_LIVEBOX = ""
+VERSION_LIVEBOX = ""
 
-verbosity = 0
+INFLUX_IP = ""
+INFLUX_PORT = ""
+INFLUX_DB = ""
 
 session = None
 sah_headers = None
 
 def load_conf():
-    global USER_LIVEBOX, PASSWORD_LIVEBOX, URL_LIVEBOX, VERSION_LIVEBOX
+    global USER_LIVEBOX, PASSWORD_LIVEBOX, URL_LIVEBOX, VERSION_LIVEBOX, INFLUX_DB, INFLUX_IP, INFLUX_PORT
     
     try:
-
         URL_LIVEBOX = os.environ.get('URL_LIVEBOX')
         USER_LIVEBOX = os.environ.get('USER_LIVEBOX')
         PASSWORD_LIVEBOX = os.environ.get('PASSWORD_LIVEBOX')
         VERSION_LIVEBOX = os.environ.get('VERSION_LIVEBOX')
-
+        INFLUX_IP = os.environ.get('INFLUX_IP')
+        INFLUX_PORT = os.environ.get('INFLUX_PORT')
+        INFLUX_DB = os.environ.get('INFLUX_DB')
     except:
         return False
 
@@ -122,7 +127,7 @@ def requete(chemin, args=None, get=False, raw=False, silent=False):
             data['service'] = data['service'][7:]
         data['method'] = c[sep+1:]
         c = 'ws'
-        ts = datetime.datetime.now()
+        ts = datetime.now()
         t = session.post(URL_LIVEBOX + c, headers=sah_headers, data=json.dumps(data))
         t = t.content
     
@@ -157,40 +162,37 @@ def requete(chemin, args=None, get=False, raw=False, silent=False):
 
     else:
         return r
-
-def livebox_info():                                                                                                                                                                                                                                                          
-    result = requete("DeviceInfo:get", silent=True)
-    o = result['status']                                                                                                                                                                                                                                                 
-    print("{0}".format(o['SoftwareVersion']))                                                                                                                                                                                                       
-    print("{0}".format((str(datetime.timedelta(seconds=int(o['UpTime']))), o['NumberOfReboots'])))
-    print("{0}".format(o['ExternalIPAddress']))                                                                                                                                                                                                                            
-    result = requete("Devices.Device.lan:getFirstParameter", { "parameter": "IPAddress" }, silent=True)                                                                                                                                                                  
-    if 'status' in result:                                                                                                                                                                                                                                               
-        print("%20s : %s" % ("IPv4Address", result['status']))                                                                                                                                                                                                                                                           
-    result = requete("VoiceService.VoiceApplication:listTrunks")                                                                                                                                                                                                             
-    if 'status' in result:                                                                                                                                                                                                                                                   
-        for i in result['status']:                                                                                                                                                                                                                                           
-            for j in i['trunk_lines']:                                                                                                                                                                                                                                       
-                if j['enable'] == "Enabled":                                                                                                                                                                                                                                 
-                    print("%20s : %s" % ("directoryNumber", j['directoryNumber']))                                                                                                                                                                                           
-                                                            
+                                                                                                                                                                                      
 def hosts_cmd():
     """ affiche la liste des hosts """
     r = requete("Hosts.Host:get")
-    print(r['status'])
+    return r['status']
 
 def main():
-    global USER_LIVEBOX, PASSWORD_LIVEBOX, URL_LIVEBOX, VERSION_LIVEBOX
+    global USER_LIVEBOX, PASSWORD_LIVEBOX, URL_LIVEBOX, VERSION_LIVEBOX, INFLUX_DB, INFLUX_IP, INFLUX_PORT
 
     load_conf()
-    new_session = False       
-
+    new_session = False
 
     if not auth(new_session):       
         sys.exit(1)
+    ifx = InfluxDBClient(host=INFLUX_IP,port=INFLUX_PORT)
+    ifx.create_database(INFLUX_DB)
+    data=hosts_cmd()
 
-    hosts_cmd()
-    livebox_info()
+    t=[]
+    for k,v in data.items():
+        d={}
+        d["measurement"]="equipements"
+        v['Active']=int(v['Active'])
+        d["tags"]={"host": v['HostName']}
+        d["fields"]=v
+        t.append(d)
+
+    ifx.write_points(t,database=INFLUX_DB)
 
 if __name__ == '__main__':
-    main()
+    schedule.every(3).minutes.do(main)
+    while True:
+        schedule.run_pending()
+        time.sleep
